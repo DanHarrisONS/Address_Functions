@@ -1,6 +1,11 @@
 # Address Functions
 
-This repository contains a collection of address processing functions, including pre-processing, quality flagging, result handling, and standardization of address columns. 
+This repository contains a collection of address processing functions, including pre-processing, quality flagging, result handling, and standardization of address columns. The functions are designed to work on pyspark.sql.DataFrame types. To transform from pandas.DataFrame the following code can be run:
+
+``` from dlh_utils import utilities
+    df = pd.read_csv('addr_index/data/pds_2022_under_65_conf.csv')
+    df = utilities.pandas_to_spark(df) ```
+
 
 # Functions: 
 
