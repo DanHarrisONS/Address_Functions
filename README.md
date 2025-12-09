@@ -13,11 +13,11 @@ df = utilities.pandas_to_spark(df)
 
 ## Package Contents: 
 
-| Name | Description
-| `pre_processing.py` | Functions to clean, standardise and flag address data
-| `quality_flags.py` | Functions to flag addresses based on their quality
-| `sac.py` | Extracts "address lines", "town" and "postcode" from address string
-| `results.py` | Runs the above sequentially
+| Name | Description |
+| `pre_processing.py` | Functions to clean, standardise and flag address data |
+| `quality_flags.py` | Functions to flag addresses based on their quality |
+| `sac.py` | Extracts "address lines", "town" and "postcode" from address string |
+| `results.py` | Runs the above sequentially |
 
 # Pre_processing 
 - the "pre_processing" module has functions to clean, standardise and flag address data.
