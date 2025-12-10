@@ -3,7 +3,7 @@ import re
 from pyspark.sql import SparkSession, DataFrame, udf
 from pyspark.sql.functions import col, regexp_extract, regexp_replace, when, trim, upper, concat_ws, lit, udf
 from pyspark.sql.types import StringType
-from address_functions.config.settings import town_list
+from address_cleaning.resources import town_list
 
 def extract_postcode_town_address(df: DataFrame, address_col: str = "final_cleaned_address") -> DataFrame:
     """

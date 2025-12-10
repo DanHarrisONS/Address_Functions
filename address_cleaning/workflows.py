@@ -15,19 +15,19 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import StringType, IntegerType, StructType, StructField
 
 
-from address_functions.pre_processing import (
+from address_cleaning.functions.pre_processing import (
     clean_punctuation, remove_noise_words_with_flag,
     get_process_and_deduplicate_address_udf, deduplicate_postcodes_udf, map_and_check_postcode, standardise_street_types
 )
 
-from address_functions.quality_flags import (
+from address_cleaning.functions.quality_flags import (
     add_length_flag, just_town_postcode, just_town_postcode_exact,
     just_country_postcode, just_country_postcode_exact,
     just_county_postcode, just_county_postcode_exact,
     keyword_present, all_3_criteria, has_country_and_ZZ99,
     country_in_last_half, is_invalid_postcode)
 
-from address_functions.sac import (
+from address_cleaning.functions.sac import (
     extract_postcode_town_address)
 
 
