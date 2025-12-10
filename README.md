@@ -1,24 +1,25 @@
 # Address Cleaning
 
 ## Introduction
-This repository contains a collection of address cleaning and processing functions, including pre-processing, quality flagging, result handling, and standardization of address columns. The functions are designed to work on `pyspark.sql.DataFrame` types. To transform from `pandas.DataFrame` the following code can be run:
+This repository contains a collection of address cleaning and processing functions, including pre-processing, quality flagging, result handling, and standardization of address columns. The functions are designed to work on `pyspark.sql.DataFrame` types. To register a spark dataframe from a CSV, the following code can be run. 
 
 ``` 
-from dlh_utils import utilities
-import pandas as pd
+from pyspark.sql import SparkSession
 
-df = pd.read_csv('addr_index/data/pds_2022_under_65_conf.csv')
-df = utilities.pandas_to_spark(df) 
+
+spark = SparkSession.builder.master("local").appName("test").getOrCreate()
+df = spark.read.csv("test.csv")
 ```
 
 ## Package Contents: 
 
-| Name | Description |
-| ------------- | ------------- |
-| `pre_processing.py` | Functions to clean, standardise and flag address data |
-| `quality_flags.py` | Functions to flag addresses based on their quality |
-| `sac.py` | Extracts "address lines", "town" and "postcode" from address string |
-| `results.py` | Runs the above sequentially |
+| Name | Description | Type |
+| ------------- | ------------- | ------------- |
+| `resources.py` | Keywords to assist the functions | Resources |
+| `pre_processing.py` | Functions to clean, standardise and flag address data | Functions |
+| `quality_flags.py` | Functions to flag addresses based on their quality | Functions |
+| `sac.py` | Extracts "address lines", "town" and "postcode" from address string | Functions |
+| `workflows.py` | Runs the above sequentially | Workflows |
 
 ## Example Usage
 ```
