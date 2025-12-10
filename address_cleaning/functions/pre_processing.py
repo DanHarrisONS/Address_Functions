@@ -15,7 +15,7 @@ from pyspark.sql.functions import udf, regexp_replace, upper, col, when, length,
 from pyspark.sql import DataFrame
 from pyspark.sql.types import StringType, IntegerType, StructType, StructField, ArrayType
 
-from address_functions.config.settings import town_list
+from address_cleaning.resources import town_list
 
 ####################################################################################
 
