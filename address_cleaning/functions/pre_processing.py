@@ -19,7 +19,7 @@ from address_cleaning.resources import town_list
 
 ####################################################################################
 
-def clean_punctuation(df: DataFrame, input_col="supplied_query_address", create_flag=True):
+def clean_punctuation(df: DataFrame, input_col: str, create_flag=True, overwrite=False) -> DataFrame:
     """
     Cleans up punctuation from address strings by removing or fixing unwanted characters, while preserving hyphens 
     and periods where necessary (e.g., between numbers or block names).
@@ -117,17 +117,19 @@ def clean_punctuation(df: DataFrame, input_col="supplied_query_address", create_
     # Step 7: Remove any trailing commas and spaces in the final cleaned address
     df = df.withColumn("final_cleaned_address", regexp_replace(col("final_cleaned_address"), r",\s*$", ""))
 
-    # Step 8: Create a flag indicating whether punctuation was cleaned
+    # Step 8: If user toggled create_flag, create a flag indicating whether punctuation was cleaned
     if create_flag:
         df = df.withColumn("punctuation_cleaned_flag",
                            when(col(input_col) == col("final_cleaned_address"), 0).otherwise(1))
+        
+    # Step 9: Overwrite the input column if specified, otherwise write to new column "cleaned_addresses"
+    if overwrite:
+        df = df.withColumn(input_col, col("final_cleaned_address"))
     else:
-        df = df.withColumn("punctuation_cleaned_flag",
-                           when(col("punctuation_cleaned_flag").isNotNull(), col("punctuation_cleaned_flag"))
-                           .otherwise(when(col(input_col) == col("final_cleaned_address"), 0).otherwise(1)))
-
+        df = df.withColumnRenamed("final_cleaned_address", "cleaned_punctuation")
+    
     # Drop intermediate columns
-    df = df.drop("cleaned_address", "address_parts", "cleaned_parts")
+    df = df.drop("cleaned_address", "address_parts", "cleaned_parts", "final_cleaned_address")
 
     return df
   
@@ -135,7 +137,7 @@ def clean_punctuation(df: DataFrame, input_col="supplied_query_address", create_
 
 ##############################################################################
 
-def remove_noise_words_with_flag(df, input_col="final_cleaned_address"):
+def remove_noise_words_with_flag(df: DataFrame, input_col: str, create_flag=True, overwrite=False) -> DataFrame:
     """
     Removes noise words from the input address column and flags any rows where noise words were removed.
 
@@ -162,16 +164,19 @@ def remove_noise_words_with_flag(df, input_col="final_cleaned_address"):
     df = df.withColumn("cleaned_address", regexp_replace(col(input_col), noise_pattern, ""))
     
     # Create a flag that indicates whether noise words have been removed
-    df = df.withColumn("noise_removed_flag", when(col("cleaned_address") != col(input_col), 1).otherwise(0))
+    if create_flag:
+        df = df.withColumn("noise_removed_flag", when(col("cleaned_address") != col(input_col), 1).otherwise(0))
     
     # Update the original address column with the cleaned address and drop the column created for this function
-    df = df.withColumn(input_col, col("cleaned_address"))
-    df = df.drop("cleaned_address")
-    
+    if overwrite:
+        df = df.drop(input_col)
+        df = df.withColumnRenamed("cleaned_address", input_col)
+    else:
+        df = df.withColumnRenamed("cleaned_address", "cleaned_noise_words")
+        
     return df
   
 ##############################################################################
-
 
 def get_process_and_deduplicate_address_udf(column_name="final_cleaned_address"):
     """
@@ -258,11 +263,7 @@ def get_process_and_deduplicate_address_udf(column_name="final_cleaned_address")
     ]))
 
     
-
-
 ###################################################################################
-
-
 
 def deduplicate_postcodes_udf():
     import re
@@ -339,8 +340,204 @@ def deduplicate_postcodes_udf():
   
   
 ###################################################################################
+
+def process_and_deduplicate_address(df: DataFrame, input_col: str, similarity_threshold = 95, create_flag=True, overwrite=False) -> DataFrame:
+    """
+    Processes and deduplicates parts of an address based on similarity. 
+    The function compares consecutive parts of the address, and if they are highly similar (based on a threshold), 
+    it keeps only one. It also flags rows where changes were made.
+
+    Parameters:
+    - df (DataFrame): The input spark DataFrame containing address data.
+    - input_col (str): The name of the address column to process.
+    - threshold (int): The similarity threshold (default is 95). Parts with a similarity ratio above this will be considered duplicates.
+
+
+    Returns:
+    - df (DataFrame): The updated DataFrame with deduplicated addresses resolved and a flag ('words_deduplicated_flag') indicating 
+                      which addresses were resolved.
+
+    Example:
+    - Input: "123 MAIN ROAD, MAIN ROAD, LONDON"
+    - Output: ("123 MAIN ROAD, LONDON", 1)
+      (The repeated part "MAIN ROAD" is removed, and the 'words_deduplicated_flag' is set to 1.)
+    """
+
+    def _process_and_deduplicate_address(address, threshold = similarity_threshold):
+        """
+        Deduplicates parts of the address by comparing consecutive parts based on a similarity threshold. (fuzzy uses Levenshtein)
+        
+        Parameters:
+        - address (str): The address string to process.
+        - threshold (int): The similarity threshold (default is 95). Parts with a similarity ratio above this will be considered duplicates.
+
+        Returns:
+        - tuple: A tuple containing:
+            - cleaned_address (str): The deduplicated address string.
+            - words_deduplicated_flag (int): A flag indicating whether any deduplication was done (1 if changes were made, 0 otherwise).
+        """
+        def contains_numbers(s):
+            # Check if the string contains any numbers
+            return bool(re.search(r'\d', s))
+
+        parts = [part.strip() for part in address.split(',')]
+        processed = []
+        seen = set()
+        skip_next = False
+        changes_made = False
+
+        for i in range(len(parts)):
+            if skip_next:
+                skip_next = False
+                continue
+
+            current_part = parts[i]
+            if i < len(parts) - 1:
+                next_part = parts[i + 1]
+                # Check if the current part and the next part are highly similar
+                if fuzz.ratio(current_part, next_part) >= threshold and abs(len(current_part) - len(next_part)) < 3:
+                    if contains_numbers(current_part) or not contains_numbers(next_part):
+                        chosen_part = current_part
+                    else:
+                        chosen_part = next_part
+                    processed.append(chosen_part)
+                    skip_next = True
+                    changes_made = True
+                else:
+                    processed.append(current_part)
+            else:
+                processed.append(current_part)
+
+        final_parts = []
+        for part in processed:
+            # Add the part if it's not already seen, ensuring no duplicates are added
+            if part not in seen:
+                final_parts.append(part)
+                seen.add(part)
+            else:
+                changes_made = True
+
+        # Flag is set to 1 if any changes were made, 0 otherwise
+        flag = 1 if changes_made else 0
+        return (', '.join(final_parts), flag)
+
+    # Register UDF and apply to DataFrame
+    process_and_deduplicate_address_udf = udf(_process_and_deduplicate_address, StructType([
+        StructField("cleaned_deduplicated_words", StringType(), True),
+        StructField("words_deduplicated_flag", IntegerType(), True)
+    ]))
+
+    result_struct = process_and_deduplicate_address_udf(df[input_col])
+    df = df.withColumn("cleaned_deduplicated_words", result_struct["cleaned_deduplicated_words"])
+
+    # If user toggled create_flag, create a flag indicating whether deduplication was done
+    if create_flag:
+        df = df.withColumn("words_deduplicated_flag", result_struct["words_deduplicated_flag"])
+
+    # Overwrite the input column if specified
+    if overwrite:
+        df = df.drop(input_col)
+        df = df.withColumnRenamed("cleaned_deduplicated_words", input_col)
+
+    return df
+
+###################################################################################
+
+
+def deduplicate_postcodes(df: DataFrame, input_col: str, create_flag=True, overwrite=False) -> DataFrame:
+    import re
+    from pyspark.sql.functions import udf
+    from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+
+    # UK postcode regex pattern (with or without space)
+    postcode_regex = r"([Gg][Ii][Rr] 0[Aa]{2})|((([A-Za-z]\d{1,2})|(([A-Za-z][A-Ha-hJ-Yj-y]\d{1,2})|(([A-Za-z]\d[A-Za-z])|([A-Za-z][A-Ha-hJ-Yj-y]\d[A-Za-z]?))))\s?\d[A-Za-z]{2})"
+
+    def normalise_postcode(postcode):
+        """Normalize postcode by removing spaces and dashes."""
+        return re.sub(r'[\s-]', '', postcode.upper())
+
+    def ensure_postcode_format(postcode):
+        """Ensure the postcode has the correct format (with a space)."""
+        postcode = normalise_postcode(postcode)
+        if len(postcode) > 3:
+            return postcode[:-3] + " " + postcode[-3:]
+        return postcode
+
+    def extract_postcodes(address):
+        """Extract all valid UK postcodes from an address string."""
+        postcodes = re.findall(postcode_regex, address)
+        if not postcodes:
+            return []
+        return [next(pc for pc in pc_tuple if pc) for pc_tuple in postcodes]  # Flatten tuples
+
+    def remove_prefix_duplicates(address, formatted_postcodes):
+        """Remove all occurrences of postcodes (both spaced and unspaced) except the last one."""
+        for postcode in formatted_postcodes[:-1]:  # Leave the last one untouched for now
+            normalised_pc = normalise_postcode(postcode)
+            # Remove the postcode regardless of spacing
+            address = re.sub(re.escape(normalised_pc), '', address)
+            address = re.sub(re.escape(postcode), '', address)
+        return re.sub(r'\s+', ' ', address.strip())  # Clean up extra spaces
+
+    def move_last_postcode_to_end(address, formatted_postcodes):
+        """Ensure that the last formatted postcode appears at the end of the address."""
+        last_postcode = formatted_postcodes[-1]  # Take the last correctly formatted postcode
+        # Remove all instances of postcodes from the address
+        for pc in formatted_postcodes:
+            address = re.sub(re.escape(pc), '', address)
+
+        # Append the last formatted postcode to the end
+        address = address.strip(', ') + ", " + last_postcode
+        return re.sub(r'\s*,\s*', ', ', address.strip(', '))  # Clean up punctuation
+
+    def _deduplicate_postcodes(address):
+        """Main function to deduplicate postcodes in an address."""
+        postcodes = extract_postcodes(address)
+        if not postcodes:
+            return address, 0  # No valid postcodes found
+        
+        formatted_postcodes = [ensure_postcode_format(pc) for pc in postcodes]
+        changes_flag = 0
+        new_address = address
+
+        # Step 1: Remove all duplicate postcodes except the last formatted one
+        new_address = remove_prefix_duplicates(new_address, formatted_postcodes)
+        
+        # Step 2: Ensure the last formatted postcode is kept at the end
+        new_address = move_last_postcode_to_end(new_address, formatted_postcodes)
+
+        # Check if any changes were made
+        if new_address != address:
+            changes_flag = 1
+        
+        return new_address, changes_flag
+
+    # Register UDF and apply to DataFrame
+    deduplicate_postcodes_udf = udf(_deduplicate_postcodes, StructType([
+        StructField("cleaned_duplicated_postcodes", StringType(), True),
+        StructField("postcode_deduplicated_flag", IntegerType(), True)
+    ]))
+
+    result_struct = deduplicate_postcodes_udf(df[input_col])
+    df = df.withColumn("cleaned_duplicated_postcodes", result_struct["cleaned_duplicated_postcodes"])
+
+    # If user toggled create_flag, create a flag indicating whether deduplication was done
+    if create_flag:
+        df = df.withColumn("postcode_deduplicated_flag", result_struct["postcode_deduplicated_flag"])
+
+    # Overwrite the input column if specified
+    if overwrite:
+        df = df.drop(input_col)
+        df = df.withColumnRenamed("cleaned_duplicated_postcodes", input_col)
+
+    return df
+
+    return df
   
-def map_and_check_postcode(address):
+  
+###################################################################################
+  
+def map_and_check_postcode(df: DataFrame, input_col: str, create_flag=True, overwrite=False) -> DataFrame:
     """
     Corrects and validates UK postcodes within an address string by applying character mapping 
     to fix common misinterpretations (e.g., 'I' to '1') and checks if the resulting postcode is valid.
@@ -413,7 +610,7 @@ def map_and_check_postcode(address):
         }
         return ''.join([char_map.get(char, char) for char in postcode])
 
-    def map_and_check_postcode(address):
+    def _map_and_check_postcode(address):
         parts = [part.strip() for part in address.split(',')]
         changes_flag = 0
         valid_postcode_found = False
@@ -443,18 +640,30 @@ def map_and_check_postcode(address):
         final_address = ', '.join(parts)
         return (final_address, changes_flag)
 
-    map_and_check_postcode_udf = udf(map_and_check_postcode, StructType([
-        StructField("final_cleaned_address", StringType()), 
-        StructField("changes_flag", IntegerType())
+    map_and_check_postcode_udf = udf(_map_and_check_postcode, StructType([
+        StructField("cleaned_postcode_mapping", StringType()), 
+        StructField("postcode_mapping_flag", IntegerType())
     ]))
 
-    return {
-        "map_and_check_postcode_udf": map_and_check_postcode_udf
-    }
+    result_struct = map_and_check_postcode_udf(df[input_col])
+    df = df.withColumn("cleaned_postcode_mapping", result_struct["cleaned_postcode_mapping"])
+
+    # If user toggled create_flag, create a flag indicating whether cleaning was done
+    if create_flag:
+        df = df.withColumn("postcode_mapping_flag", result_struct["postcode_mapping_flag"])
+
+    # Overwrite the input column if specified
+    if overwrite:
+        df = df.drop(input_col)
+        df = df.withColumnRenamed("cleaned_postcode_mapping", input_col)
+
+    return df
+
+    return df
   
 #############################################################################################
 
-def standardise_street_types(df, address_col="final_cleaned_address"):
+def standardise_street_types(df: DataFrame, input_col: str, create_flag=True, overwrite=False) -> DataFrame:
     """
     Standardises street type abbreviations and common misspellings within an address column, 
     applying a set of predefined rules to replace short forms like 'ST' with 'STREET' and 
@@ -504,25 +713,31 @@ def standardise_street_types(df, address_col="final_cleaned_address"):
     Input: "321 DRIVE LANE"
     Output: "321 DRIVE LANE", 0  # No changes, street type already standardised
     """
-    original_column = col(address_col)
+    original_column = col(input_col)
+    destination_col = "standardised_street_addresses"
 
     # Apply standardisation rules for street types
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bSTR\b|\bSTRT\b', 'STREET'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bST\b(?!REET\b)', 'STREET'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bRD\b|RAOD', 'ROAD'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bAVE\b|\bAVE\.\b|\bAVENEU\b', 'AVENUE'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bCRT\b|\bCRT\.\b|\bCT\b', 'COURT'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bCRESENT\b|\bCRSNT\b', 'CRESCENT'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bDRV\b|\bDR\b', 'DRIVE'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bGRDN(?=S\b)?\b|\bGDN(?=S\b)?\b', 'GARDEN'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bPK\b', 'PARK'))
-    df = df.withColumn(address_col, regexp_replace(col(address_col), r'\bCL\b', 'CLOSE'))
+    df = df.withColumn(destination_col, regexp_replace(original_column, r'\bSTR\b|\bSTRT\b', 'STREET'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bST\b(?!REET\b)', 'STREET'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bRD\b|RAOD', 'ROAD'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bAVE\b|\bAVE\.\b|\bAVENEU\b', 'AVENUE'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bCRT\b|\bCRT\.\b|\bCT\b', 'COURT'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bCRESENT\b|\bCRSNT\b', 'CRESCENT'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bDRV\b|\bDR\b', 'DRIVE'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bGRDN(?=S\b)?\b|\bGDN(?=S\b)?\b', 'GARDEN'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bPK\b', 'PARK'))
+    df = df.withColumn(destination_col, regexp_replace(col(destination_col), r'\bCL\b', 'CLOSE'))
 
     # Add a flag to indicate if any standardization has occurred by comparing the original column and the modified one
-    df = df.withColumn(
-        'street_type_standardised_flag',
-        when(col(address_col) != original_column, lit(1)).otherwise(lit(0))
-    )
+    if create_flag:
+        df = df.withColumn(
+            'street_type_standardised_flag',
+            when(col(destination_col) != original_column, lit(1)).otherwise(lit(0))
+        )
+
+    if overwrite:
+        df = df.drop(input_col)
+        df = df.withColumnRenamed(destination_col, input_col)
 
     return df
   
