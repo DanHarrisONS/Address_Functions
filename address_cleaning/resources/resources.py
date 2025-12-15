@@ -270,3 +270,12 @@ disallowed_country_list = [
     "TURKEY",  "TURKS AND CAICOS ISLANDS",  "TURKMENISTAN", "TUVALU", "UGANDA", "UKRAINE", "UNITED ARAB EMIRATES",
     "UNITED STATES", "URUGUAY", "UZBEKISTAN", "VANUATU", "VATICAN CITY", "VENEZUELA", "VIETNAM",
     "YEMEN", "ZAMBIA", "ZIMBABWE"]
+
+# better naming conventions needed for these '0,0,0' and 'Z Z, Z' need better management
+misc_keyword_list = ["LOST CONTACT", "ADDRESS NOT FOUND",
+                    "MOVED ADDRESS", "CHILD HAS MOVED", "LOST CONTACT", "CHILD HAS NOW",
+                    "ADDRESS NOT KNOWN", "MOVED ABROAD", "MOVED OUT OF", "NO TRACE", 
+                    "UNKNOWN ADDRESS", "NOT KNOWN", "NOT GIVEN",
+                    "0, 0, 0", "Z Z, Z", "WHEREABOUTS UNKNOWN"]
+
+misc_special_keywords = ["UNKNOWN", "UNK", "ANK", "ABROAD", "NOT APPLICABLE"]

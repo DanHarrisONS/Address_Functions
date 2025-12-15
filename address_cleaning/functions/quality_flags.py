@@ -8,75 +8,27 @@ import openpyxl
 import xlrd
 
 import pyspark.sql.functions as F
-from pyspark.sql.functions import udf, regexp_replace, upper, col, when, length, split, regexp_extract, trim
+from pyspark.sql.functions import udf, regexp_replace, upper, col, when, length, split, regexp_extract, trim, array_contains
 from pyspark.sql import DataFrame
 from pyspark.sql.types import StringType, IntegerType, StructType, StructField
+from pyspark import SparkContext
 
 from address_cleaning.resources import (
     town_list, alternative_town_list, 
     allowed_country_list, disallowed_country_list, county_list
 )
 
+from address_cleaning.utilities import fuzzy_string_match
+
+
 #################################################################################
 
-"""
-Adds a 'length_flag' column to the DataFrame based on the length of the specified column.
+#BUGS HERE, HAVE POSTCODE VALIDATION AS SEPERATE FLAG FUNCTION? TOO MUCH FOR ONE FUNCTION I THINK.
+#TOWNS WON'T NECESSERILY BE AT START OF STRING, HOW DO WE FIND MATCH IF NOT BETWEEN COMMAS TOO? (DOOMED HERE?)
+# MAYBE SPLIT BY COMMAS AND CHECK EACH ELEMENT? 
 
-This function checks the length of the content in the specified column. If the length 
-of the content is less than 10 characters or greater than 150 characters, the 'length_flag'
-column is set to 1, otherwise it's set to 0.
-
-Parameters:
-- df (DataFrame): The input DataFrame.
-- column_name (str): The name of the column whose length will be checked. 
-                     Defaults to "final_cleaned_address".
-
-Returns:
-DataFrame: The DataFrame with the added 'length_flag' column.
-
-Examples:
---------
-+---------------------------------------------+-------------+
-| final_cleaned_address                       | length_flag |
-+---------------------------------------------+-------------+
-| 123 MAIN ST, NY                             |           0 |
-| UNK                                         |           1 |
-| 1001 CENTRAL AVE, CA 90001                  |           0 |
-| MOVED ADDRESS, LOS ANGELES, CA 90210        |           0 |
-| VERY LONG ADDRESS THAT EXCEEDS...           |           1 |
-+---------------------------------------------+-------------+
-
-"""
-
-def add_length_flag(df, column_name="final_cleaned_address"):
-    df = df.withColumn("length_flag", 
-                       when((length(col(column_name)) < 10) | 
-                            (length(col(column_name)) > 150), 1).otherwise(0))
-    return df
-
-###################################################################################
-
-# just town and postcode flag
-
-def fuzzy_match_town(town, valid_towns):
-    """
-    Evaluates if a given town name closely matches any town name in a predefined list of valid towns using fuzzy matching.
-    A match is considered valid if the similarity score is 90 or above.
-
-    Parameters:
-    - town (str): The town name to check for a match.
-    - valid_towns (list of str): A list of valid town names to match against.
-
-    Returns:
-    - bool: True if a match is found with a similarity score of 90 or above; otherwise, False.
-    """
-    
-    for valid_town in valid_towns:
-        if fuzz.ratio(town, valid_town) >= 90:
-            return True
-    return False
-
-def just_town_postcode(df: DataFrame, address_col: str = "final_cleaned_address") -> DataFrame:
+# RESOLVED BUGS AND REDESIGNED FUNCTION
+def validate_address_components(df: DataFrame, input_col: str, flag_suffix: str, comparator_list: list = town_list, similarity_threshold: int = 90) -> DataFrame:
     """
     Flags DataFrame records that contain only a town name from a predefined list and a valid UK postcode,
     excluding the special case 'ZZ99'. It leverages fuzzy matching to determine if the town name in each
@@ -84,7 +36,8 @@ def just_town_postcode(df: DataFrame, address_col: str = "final_cleaned_address"
 
     Parameters:
     - df (DataFrame): The input DataFrame containing address data.
-    - address_col (str, optional): The column name in df that contains the address information. Defaults to "final_cleaned_address".
+    - input_col (str): The column name in df that contains the address information.
+    - similarity_threshold (int, optional): The threshold above which a town name match is considered valid. Defaults to 90.
 
     Returns:
     - DataFrame: The DataFrame with an additional column 'just_town_postcode_flag'. This flag is set to 1 for records
@@ -94,29 +47,24 @@ def just_town_postcode(df: DataFrame, address_col: str = "final_cleaned_address"
     The function requires a predefined list of valid towns (`town_list`) and utilises the `fuzzy_match_town` function
     to perform fuzzy matching on town names. It assumes the presence of a valid UK postcode regex pattern for postcode validation.
     """
-    # UK postcode pattern to validate postcode format
-    uk_postcode_pattern = r"([Gg][Ii][Rr] 0[Aa]{2})|((([A-Za-z]\d{1,2})|(([A-Za-z][A-Ha-hJ-Yj-y]\d{1,2})|(([A-Za-z]\d[A-Za-z])|([A-Za-z][A-Ha-hJ-Yj-y]\d[A-Za-z]?))))\s?\d[A-Za-z]{2})"
+    # Split address into components by comma and space
 
-    # List of valid towns for matching
-    valid_towns = town_list  
+    comparator_list_upper = [item.upper().strip() for item in comparator_list]
 
-    # Define a UDF for fuzzy matching towns against the valid towns list
-    fuzzy_match_town_udf = udf(lambda x: fuzzy_match_town(x, valid_towns), IntegerType())
+    def fuzzy_match_address(address):
+        parts = [part.strip() for part in address.upper().split(",")]
+        for part in parts:
+            comparator_list_filtered = [comp for comp in comparator_list_upper if len(comp) - len(part) <= 3]
+            for comp in comparator_list_filtered:
+                if fuzz.ratio(part.upper().strip(), comp) >= similarity_threshold:
+                    return 1
+        return 0
 
-    # Split address into town and postcode components for analysis
-    split_address = F.split(col(address_col), ", ")
-    town = split_address.getItem(0)
-    postcode = split_address.getItem(1)
+    fuzzy_match_udf = udf(fuzzy_match_address, IntegerType())
+    validated_addresses = fuzzy_match_udf(df[input_col])
 
-    # Determine valid address flag based on town match and postcode criteria
-    valid_address_flag = F.when(
-        (fuzzy_match_town_udf(town) == 1) &  # Town fuzzy match check
-        (F.regexp_extract(postcode, uk_postcode_pattern, 0) != "") &  # Postcode format validation
-        (~postcode.contains("ZZ99")),  # Exclude 'ZZ99' special case
-        1).otherwise(0)
-
-    # Add the 'just_town_postcode_flag' column to the DataFrame
-    df = df.withColumn("just_town_postcode_flag", valid_address_flag)
+    destination_colname = f"validated_{flag_suffix}"
+    df = df.withColumn(destination_colname, validated_addresses)
 
     return df
   
